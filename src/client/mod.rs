@@ -150,8 +150,8 @@ pub struct Client<R: NsResolver + Clone> {
 }
 
 impl<R> Client<R>
-where
-    R: NsResolver + Clone + Send + Sync + 'static,
+    where
+        R: NsResolver + Clone + Send + Sync + 'static,
 {
     pub fn new(options: ClientOptions, name_server: NameServer<R>) -> Self {
         let credentials = options.credentials.clone();
@@ -183,8 +183,7 @@ where
     pub fn start(&self) {
         match ClientState::try_from(self.state.load(Ordering::SeqCst)).unwrap() {
             ClientState::Created => {
-                self.state
-                    .store(ClientState::StartFailed.into(), Ordering::SeqCst);
+                self.state.store(ClientState::StartFailed.into(), Ordering::SeqCst);
                 let (shutdown_tx, mut shutdown_rx1) = broadcast::channel(1);
                 let mut shutdown_rx2 = shutdown_tx.subscribe();
                 let mut shutdown_rx3 = shutdown_tx.subscribe();
@@ -227,8 +226,7 @@ where
                                 }
                             }
                         }
-                    }
-                    .instrument(info_span!("update_topic_route_info")),
+                    }.instrument(info_span!("update_topic_route_info")),
                 );
 
                 // Schedule send heartbeat to all brokers
@@ -248,15 +246,13 @@ where
                                 }
                             }
                         }
-                    }
-                    .instrument(info_span!("send_heartbeat_to_all_brokers")),
+                    }.instrument(info_span!("send_heartbeat_to_all_brokers")),
                 );
 
                 // Persist offset
 
                 // Rebalance
-                self.state
-                    .store(ClientState::Running.into(), Ordering::SeqCst);
+                self.state.store(ClientState::Running.into(), Ordering::SeqCst);
             }
             _ => {}
         }
@@ -267,7 +263,7 @@ where
             self.state
                 .swap(ClientState::Shutdown.into(), Ordering::Relaxed),
         )
-        .unwrap()
+            .unwrap()
         {
             ClientState::Shutdown => {} // shutdown already
             _ => {
@@ -434,7 +430,7 @@ where
                     time::Duration::from_secs(3),
                     self.remote_client.invoke(addr, cmd),
                 )
-                .await
+                    .await
                 {
                     Ok(Ok(res)) => match ResponseCode::try_from(res.code()) {
                         Ok(ResponseCode::Success) => {
@@ -522,8 +518,7 @@ where
                     producer_group: producer_group.to_string(),
                     consumer_group: consumer_group.to_string(),
                 };
-                let cmd =
-                    RemotingCommand::with_header(RequestCode::UnregisterClient, header, Vec::new());
+                let cmd = RemotingCommand::with_header(RequestCode::UnregisterClient, header, Vec::new());
                 match self.remote_client.invoke(broker_addr, cmd).await {
                     Ok(res) => {
                         if res.code() != ResponseCode::Success {
@@ -536,11 +531,7 @@ where
         }
     }
 
-    pub async fn create_topic(
-        &self,
-        key: &str,
-        new_topic: &model::TopicConfig,
-    ) -> Result<(), Error> {
+    pub async fn create_topic(&self, key: &str, new_topic: &model::TopicConfig) -> Result<(), Error> {
         let mut last_error = None;
         let mut create_ok_at_least_once = false;
         let route_data = self.name_server.query_topic_route_info(key).await?;
@@ -561,11 +552,7 @@ where
                         topic_sys_flag: new_topic.topic_sys_flag,
                         order: new_topic.order,
                     };
-                    let cmd = RemotingCommand::with_header(
-                        RequestCode::UpdateAndCreateTopic,
-                        header,
-                        Vec::new(),
-                    );
+                    let cmd = RemotingCommand::with_header(RequestCode::UpdateAndCreateTopic, header, Vec::new());
                     match self.remote_client.invoke(addr, cmd).await {
                         Ok(res) => {
                             if res.code() == ResponseCode::Success {
@@ -627,8 +614,7 @@ mod test {
         let name_server = NameServer::new(
             Resolver::Static(StaticResolver::new(vec!["localhost:9876".to_string()])),
             options.credentials.clone(),
-        )
-        .unwrap();
+        ).unwrap();
         Client::new(options, name_server)
     }
 

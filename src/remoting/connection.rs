@@ -54,7 +54,7 @@ impl ConnectionSender {
         debug!(
             code = cmd.code(),
             opaque = cmd.header.opaque,
-            cmd = ?cmd,
+            cmd = ?cmd, //?是tracing中debug宏的快捷写法，表示该field需要使用fmt::Debug来记录
             "sending remoting command to {}",
             &self.addr
         );
@@ -62,9 +62,7 @@ impl ConnectionSender {
             self.registrations_tx.send((cmd.header.opaque, sender)),
             self.tx.send(cmd),
         ) {
-            (Ok(_), Ok(_)) => receiver
-                .await
-                .map_err(|_err| Error::Connection(ConnectionError::Disconnected)),
+            (Ok(_), Ok(_)) => receiver.await.map_err(|_err| Error::Connection(ConnectionError::Disconnected)),
             _ => Err(Error::Connection(ConnectionError::Disconnected)),
         }
     }
@@ -72,35 +70,34 @@ impl ConnectionSender {
     pub async fn send_oneway(&self, cmd: RemotingCommand) -> Result<(), Error> {
         let mut cmd = cmd;
         cmd.header.opaque = self.opaque_id.fetch_add(1, Ordering::SeqCst);
-        self.tx
-            .send(cmd)
+        self.tx.send(cmd)
             .map_err(|_| Error::Connection(ConnectionError::Disconnected))?;
         Ok(())
     }
 }
 
-struct Receiver<S: Stream<Item = Result<RemotingCommand, Error>>> {
+struct Receiver<S: Stream<Item=Result<RemotingCommand, Error>>> {
     addr: String,
     inbound: Pin<Box<S>>,
     // internal sender
-    outbound: mpsc::UnboundedSender<RemotingCommand>,
+    // outbound: mpsc::UnboundedSender<RemotingCommand>,
     pending_requests: HashMap<i32, oneshot::Sender<RemotingCommand>>,
     registrations: Pin<Box<mpsc::UnboundedReceiver<(i32, oneshot::Sender<RemotingCommand>)>>>,
     shutdown: Pin<Box<oneshot::Receiver<()>>>,
 }
 
-impl<S: Stream<Item = Result<RemotingCommand, Error>>> Receiver<S> {
+impl<S: Stream<Item=Result<RemotingCommand, Error>>> Receiver<S> {
     pub fn new(
         addr: String,
         inbound: S,
-        outbound: mpsc::UnboundedSender<RemotingCommand>,
+        // outbound: mpsc::UnboundedSender<RemotingCommand>,
         registrations: mpsc::UnboundedReceiver<(i32, oneshot::Sender<RemotingCommand>)>,
         shutdown: oneshot::Receiver<()>,
     ) -> Receiver<S> {
         Self {
             addr,
             inbound: Box::pin(inbound),
-            outbound,
+            // outbound,
             pending_requests: HashMap::new(),
             registrations: Box::pin(registrations),
             shutdown: Box::pin(shutdown),
@@ -108,7 +105,7 @@ impl<S: Stream<Item = Result<RemotingCommand, Error>>> Receiver<S> {
     }
 }
 
-impl<S: Stream<Item = Result<RemotingCommand, Error>>> Future for Receiver<S> {
+impl<S: Stream<Item=Result<RemotingCommand, Error>>> Future for Receiver<S> {
     type Output = Result<(), ()>;
 
     fn poll(mut self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -121,6 +118,8 @@ impl<S: Stream<Item = Result<RemotingCommand, Error>>> Future for Receiver<S> {
         loop {
             match self.registrations.as_mut().poll_recv(ctx) {
                 Poll::Ready(Some((opaque, resolver))) => {
+
+                    debug!("?????????????????????");
                     self.pending_requests.insert(opaque, resolver);
                 }
                 Poll::Ready(None) => return Poll::Ready(Err(())),
@@ -141,6 +140,8 @@ impl<S: Stream<Item = Result<RemotingCommand, Error>>> Future for Receiver<S> {
                     );
                     if msg.is_response_type() {
                         if let Some(resolver) = self.pending_requests.remove(&msg.header.opaque) {
+                            //在这里将resp发送出去
+                            debug!("！！！！！！！！！！！！");
                             let _ = resolver.send(msg);
                         }
                     } else {
@@ -172,32 +173,40 @@ impl Connection {
     #[tracing::instrument(name = "connect")]
     async fn prepare_stream(addr: String) -> Result<ConnectionSender, Error> {
         info!("connecting to server");
-        let stream = TcpStream::connect(&addr)
-            .await
+        let stream = TcpStream::connect(&addr).await
             .map(|stream| tokio_util::codec::Framed::new(stream, MqCodec))?;
         info!("server connected");
         Connection::connect(addr, stream).await
     }
 
     async fn connect<S>(addr: String, stream: S) -> Result<ConnectionSender, Error>
-    where
-        S: Stream<Item = Result<RemotingCommand, Error>>,
-        S: Sink<RemotingCommand, Error = Error>,
-        S: Send + std::marker::Unpin + 'static,
+        where
+            S: Stream<Item=Result<RemotingCommand, Error>>,
+            S: Sink<RemotingCommand, Error=Error>,
+            S: Send + std::marker::Unpin + 'static,
     {
         let (mut sink, stream) = stream.split();
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) : (mpsc::UnboundedSender<RemotingCommand>, mpsc::UnboundedReceiver<RemotingCommand>) = mpsc::unbounded_channel();
         let (registrations_tx, registrations_rx) = mpsc::unbounded_channel();
         let (receiver_shutdown_tx, receiver_shutdown_rx) = oneshot::channel();
+        //接收协程，接收stream来的数据
         tokio::spawn(Box::pin(Receiver::new(
             addr.clone(),
             stream,
-            tx.clone(),
+            // tx.clone(),
             registrations_rx,
             receiver_shutdown_rx,
         )));
+        // 发送协程，从rx接收发送者信息,将信息流传给tcp的sink
         tokio::spawn(Box::pin(async move {
             while let Some(msg) = rx.recv().await {
+                debug!(
+                    code = msg.code(),
+                    opaque = msg.header.opaque,
+                    remark = %msg.header.remark,
+                    cmd = ?msg,
+                    "connect rx.recv() and sink to  sink ",
+                );
                 if let Err(_e) = sink.send(msg).await {
                     // FIXME: error handling
                     break;

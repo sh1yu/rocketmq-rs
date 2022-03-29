@@ -27,13 +27,7 @@ pub struct RemotingCommand {
 }
 
 impl RemotingCommand {
-    pub fn new(
-        code: i16,
-        flag: i32,
-        remark: String,
-        ext_fields: HashMap<String, String>,
-        body: Vec<u8>,
-    ) -> Self {
+    pub fn new(code: i16, flag: i32, remark: String, ext_fields: HashMap<String, String>, body: Vec<u8>) -> Self {
         Self {
             header: Header {
                 code,
@@ -48,11 +42,7 @@ impl RemotingCommand {
         }
     }
 
-    pub fn with_header<H: EncodeRequestHeader>(
-        code: RequestCode,
-        header: H,
-        body: Vec<u8>,
-    ) -> Self {
+    pub fn with_header<H: EncodeRequestHeader>(code: RequestCode, header: H, body: Vec<u8>) -> Self {
         let ext_fields = header.encode();
         Self::new(code.into(), 0, String::new(), ext_fields, body)
     }
@@ -94,6 +84,7 @@ impl RemotingCommand {
     }
 }
 
+//类单元结构体
 #[derive(Debug, Clone)]
 pub(crate) struct MqCodec;
 
@@ -165,11 +156,10 @@ mod test {
         let mut fields = HashMap::new();
         fields.insert("messageId".to_string(), "123".to_string());
         fields.insert("offset".to_string(), "456".to_string());
-        let cmd =
-            RemotingCommand::new(10, 0, "remark".to_string(), fields, b"Hello World".to_vec());
+        let cmd = RemotingCommand::new(10, 0, "remark".to_string(), fields, b"Hello World".to_vec());
         let mut encoded = BytesMut::new();
         cmd.encode_into(&mut encoded, JsonHeaderCodec).unwrap();
-        let mut decoder = MqCodec;
+        let mut decoder = MqCodec; //MyCodec是类单元结构体，不需要大括号
         let decoded = decoder.decode(&mut encoded).unwrap().unwrap();
         assert_eq!(cmd, decoded);
     }
@@ -179,11 +169,10 @@ mod test {
         let mut fields = HashMap::new();
         fields.insert("messageId".to_string(), "123".to_string());
         fields.insert("offset".to_string(), "456".to_string());
-        let cmd =
-            RemotingCommand::new(10, 0, "remark".to_string(), fields, b"Hello World".to_vec());
+        let cmd = RemotingCommand::new(10, 0, "remark".to_string(), fields, b"Hello World".to_vec());
         let mut encoded = BytesMut::new();
         cmd.encode_into(&mut encoded, RocketMQHeaderCodec).unwrap();
-        let mut decoder = MqCodec;
+        let mut decoder = MqCodec; //MyCodec是类单元结构体，不需要大括号
         let decoded = decoder.decode(&mut encoded).unwrap().unwrap();
         assert_eq!(cmd, decoded);
     }
@@ -193,8 +182,7 @@ mod test {
         let mut fields = HashMap::new();
         fields.insert("messageId".to_string(), "123".to_string());
         fields.insert("offset".to_string(), "456".to_string());
-        let cmd =
-            RemotingCommand::new(10, 0, "remark".to_string(), fields, b"Hello World".to_vec());
+        let cmd = RemotingCommand::new(10, 0, "remark".to_string(), fields, b"Hello World".to_vec());
         let mut codec = MqCodec;
         let mut encoded = BytesMut::new();
         codec.encode(cmd.clone(), &mut encoded).unwrap();
@@ -207,8 +195,7 @@ mod test {
         let mut fields = HashMap::new();
         fields.insert("messageId".to_string(), "123".to_string());
         fields.insert("offset".to_string(), "456".to_string());
-        let mut cmd =
-            RemotingCommand::new(10, 0, "remark".to_string(), fields, b"Hello World".to_vec());
+        let mut cmd = RemotingCommand::new(10, 0, "remark".to_string(), fields, b"Hello World".to_vec());
         assert!(!cmd.is_response_type());
 
         cmd.mark_response_type();

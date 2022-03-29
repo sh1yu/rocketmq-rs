@@ -4,9 +4,12 @@ use rocketmq::Message;
 #[tokio::main]
 async fn main() {
     let mut options = ProducerOptions::default();
-    options.set_name_server(vec!["localhost:9876".to_string()]);
+    options.set_name_server(vec!["10.248.129.188:9876".to_string()]);
+    println!("options: {:?}", options);
+
     let producer = Producer::with_options(options).unwrap();
     producer.start();
+
     let msg = Message::new(
         "TEST_TOPIC".to_string(),
         String::new(),
@@ -15,6 +18,9 @@ async fn main() {
         b"test".to_vec(),
         false,
     );
-    let ret = producer.send(msg).await.unwrap();
-    assert_eq!(ret.status, SendStatus::Ok);
+
+    let ret = producer.send(msg).await;
+    println!("res {:?}", ret);
+
+    // assert_eq!(ret.status, SendStatus::Ok);
 }

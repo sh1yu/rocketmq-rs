@@ -18,6 +18,7 @@ use crate::Error;
 const NAME_VALUE_SEP: char = '\u{001}';
 const PROPERTY_SEP: char = '\u{002}';
 
+// UNIQ_ID_GENERATOR 全局uid生成器，由ip地址+processId+loaderId+时间长度+顺序数组成
 static UNIQ_ID_GENERATOR: Lazy<Mutex<UniqueIdGenerator>> = Lazy::new(|| {
     let local_ip = client_ip_addr().unwrap_or_else(|| IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
     let mut buf = Vec::new();
@@ -70,12 +71,12 @@ impl Property {
 #[derive(Debug, Clone, Copy, PartialEq, IntoPrimitive, TryFromPrimitive)]
 #[repr(i32)]
 pub enum MessageSysFlag {
-    Compressed = 0x1,
-    MultiTags = 0x1 << 1,
     TransactionNotType = 0,
-    TransactionPreparedType = 0x1 << 2,
-    TransactionCommitType = 0x2 << 2,
-    TransactionRollbackType = 0x3 << 2,
+    Compressed = 0x1,
+    MultiTags = 0x2,
+    TransactionPreparedType = 0x4,
+    TransactionCommitType = 0x8,
+    TransactionRollbackType = 0x12,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
@@ -87,6 +88,7 @@ pub struct MessageQueue {
     pub queue_id: u32,
 }
 
+// 消息体定义
 #[derive(Debug, Clone)]
 pub struct Message {
     pub(crate) topic: String,
@@ -100,14 +102,7 @@ pub struct Message {
 }
 
 impl Message {
-    pub fn new(
-        topic: String,
-        tags: String,
-        keys: String,
-        flag: i32,
-        body: Vec<u8>,
-        wait_store_msg_ok: bool,
-    ) -> Message {
+    pub fn new(topic: String, tags: String, keys: String, flag: i32, body: Vec<u8>, wait_store_msg_ok: bool) -> Message {
         let mut props = HashMap::new();
         if !tags.is_empty() {
             props.insert(Property::TAGS.to_string(), tags);
@@ -157,8 +152,7 @@ impl Message {
 
     pub fn sharding_key(&self) -> Option<String> {
         self.properties
-            .get(Property::SHARDING_KEY)
-            .cloned()
+            .get(Property::SHARDING_KEY).cloned()
             .and_then(|val| if val.is_empty() { None } else { Some(val) })
     }
 
@@ -395,29 +389,29 @@ impl UniqueIdGenerator {
             > self.next_timestamp
         {
             // update timestamp
-            let now = OffsetDateTime::now_local();
+            let now = OffsetDateTime::now_utc();
             let year = now.year();
             let month = now.month();
             self.start_timestamp = PrimitiveDateTime::new(
-                Date::try_from_ymd(year, month, 1).unwrap(),
-                Time::try_from_hms(0, 0, 0).unwrap(),
+                Date::from_calendar_date(year, month, 1).unwrap(),
+                Time::from_hms(0, 0, 0).unwrap(),
             )
-            .assume_offset(now.offset())
-            .unix_timestamp();
+                .assume_offset(now.offset())
+                .unix_timestamp();
             self.next_timestamp = (PrimitiveDateTime::new(
-                Date::try_from_ymd(year, month, 1).unwrap(),
-                Time::try_from_hms(0, 0, 0).unwrap(),
+                Date::from_calendar_date(year, month, 1).unwrap(),
+                Time::from_hms(0, 0, 0).unwrap(),
             )
-            .assume_offset(now.offset())
+                .assume_offset(now.offset())
                 + time::Duration::days(30))
-            .unix_timestamp();
+                .unix_timestamp();
         }
-        self.counter += self.counter.wrapping_add(1);
+        self.counter = self.counter.wrapping_add(1);
         let mut buf = Vec::new();
         buf.write_i32::<BigEndian>(
-            ((OffsetDateTime::now_local().unix_timestamp() - self.start_timestamp) * 1000) as i32,
+            ((OffsetDateTime::now_utc().unix_timestamp() - self.start_timestamp) * 1000) as i32,
         )
-        .unwrap();
+            .unwrap();
         buf.write_i16::<BigEndian>(self.counter).unwrap();
         self.prefix.clone() + &hex::encode(buf)
     }
@@ -459,5 +453,14 @@ mod test {
         assert_eq!("123", &msg.message.properties["a"]);
         assert_eq!("hello", &msg.message.properties["b"]);
         assert_eq!("3.14", &msg.message.properties["c"]);
+    }
+
+    #[test]
+    fn text_generate_uniq_id() {
+        use super::UNIQ_ID_GENERATOR;
+        for i in 0..100 {
+            let uid = UNIQ_ID_GENERATOR.lock().generate();
+            println!("i: {}, uid: {}", i, uid);
+        }
     }
 }

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use hmac::{Hmac, Mac, NewMac};
+use hmac::{Hmac, Mac};
 use parking_lot::Mutex;
 use tokio::sync::oneshot;
 
@@ -13,6 +13,7 @@ use crate::protocol::RemotingCommand;
 
 type HmacSha1 = Hmac<sha1::Sha1>;
 
+//网络连接状态
 enum ConnectionStatus {
     Connected(Arc<Connection>),
     Connecting(Vec<oneshot::Sender<Result<Arc<Connection>, Error>>>),
@@ -20,7 +21,7 @@ enum ConnectionStatus {
 
 #[derive(Clone)]
 pub struct RemotingClient {
-    connections: Arc<Mutex<HashMap<String, ConnectionStatus>>>,
+    connections: Arc<Mutex<HashMap<String, ConnectionStatus>>>, //地址addr到连接的映射
     credentials: Option<Credentials>,
 }
 
@@ -86,9 +87,7 @@ impl RemotingClient {
 
     async fn connect(&self, addr: &str) -> Result<Arc<Connection>, Error> {
         let rx = {
-            match self
-                .connections
-                .lock()
+            match self.connections.lock()
                 .entry(addr.to_string())
                 .or_insert_with(|| ConnectionStatus::Connecting(Vec::new()))
             {

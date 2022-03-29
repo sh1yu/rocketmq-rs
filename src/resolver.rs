@@ -91,7 +91,7 @@ impl NsResolver for StaticResolver {
 #[derive(Debug, Clone)]
 pub struct PassthroughResolver<T: NsResolver> {
     addrs: Vec<String>,
-    fallback: T,
+    fallback: T, //在对象内的addrs为空时，将resolve工作转给下一个备用resolver
 }
 
 impl<T: NsResolver> PassthroughResolver<T> {
