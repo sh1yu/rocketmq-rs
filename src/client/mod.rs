@@ -182,11 +182,21 @@ impl<R> Client<R>
 
     pub fn start(&self) {
         match ClientState::try_from(self.state.load(Ordering::SeqCst)).unwrap() {
+
+            //只有在created状态时才执行start操作
             ClientState::Created => {
                 self.state.store(ClientState::StartFailed.into(), Ordering::SeqCst);
+
+                //shutdown_rx1用于接收关闭信号，在信号发生时会执行关闭操作
                 let (shutdown_tx, mut shutdown_rx1) = broadcast::channel(1);
+
+                //shutdown_rx2用于接收关闭信号，在信号发生时退出定时同步routeInfo的定时任务
                 let mut shutdown_rx2 = shutdown_tx.subscribe();
+
+                //shutdown_rx3用于接收关闭信号，在信号发生时退出和broker之间的心跳定时任务
                 let mut shutdown_rx3 = shutdown_tx.subscribe();
+
+                //shutdown_tx关闭信号发射端由client自己持有。在producer活着consumer主动退出（调用shutdown）时，使用该发射端发送关闭信号
                 self.shutdown_tx.lock().replace(shutdown_tx);
 
                 // Schedule update name server address
@@ -201,6 +211,8 @@ impl<R> Client<R>
                                     Err(err) => error!("name server address update failed: {:?}", err),
                                 };
                             }
+
+                            //发生关闭信号，直接退出循环
                             _ = shutdown_rx1.recv() => {
                                 info!("client shutdown, stop updating name server domain info");
                                 break;
@@ -220,6 +232,7 @@ impl<R> Client<R>
                                 _ = interval.tick() => {
                                     let _ = client.update_topic_route_info().await;
                                 }
+                                //发生关闭信号，直接退出updateRouteInfo定时任务循环
                                 _ = shutdown_rx2.recv() => {
                                     info!("client shutdown, stop updating topic route info");
                                     break;
@@ -240,6 +253,7 @@ impl<R> Client<R>
                                 _ = interval.tick() => {
                                     let _ = client.send_heartbeat_to_all_brokers().await;
                                 }
+                                //发生关闭信号，直接退出heartbeat定时任务循环
                                 _ = shutdown_rx3.recv() => {
                                     info!("client shutdown, stop sending heartbeat to all brokers");
                                     break;
@@ -260,11 +274,8 @@ impl<R> Client<R>
 
     pub fn shutdown(&self) {
         match ClientState::try_from(
-            self.state
-                .swap(ClientState::Shutdown.into(), Ordering::Relaxed),
-        )
-            .unwrap()
-        {
+            self.state.swap(ClientState::Shutdown.into(), Ordering::Relaxed),
+        ).unwrap() {
             ClientState::Shutdown => {} // shutdown already
             _ => {
                 if let Some(tx) = &*self.shutdown_tx.lock() {
@@ -292,8 +303,7 @@ impl<R> Client<R>
         cmd: RemotingCommand,
         timeout: time::Duration,
     ) -> Result<RemotingCommand, Error> {
-        time::timeout(timeout, self.remote_client.invoke(addr, cmd))
-            .await
+        time::timeout(timeout, self.remote_client.invoke(addr, cmd)).await
             .map_err(|e| io::Error::new(io::ErrorKind::TimedOut, e))?
     }
 
@@ -429,9 +439,7 @@ impl<R> Client<R>
                 match time::timeout(
                     time::Duration::from_secs(3),
                     self.remote_client.invoke(addr, cmd),
-                )
-                    .await
-                {
+                ).await {
                     Ok(Ok(res)) => match ResponseCode::try_from(res.code()) {
                         Ok(ResponseCode::Success) => {
                             self.name_server.add_broker_version(
@@ -621,9 +629,6 @@ mod test {
     #[tokio::test]
     async fn test_client_create_topic() {
         let client = new_client();
-        client
-            .create_topic("DefaultCluster", &TopicConfig::new("test"))
-            .await
-            .unwrap();
+        client.create_topic("DefaultCluster", &TopicConfig::new("test")).await.unwrap();
     }
 }

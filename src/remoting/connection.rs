@@ -16,8 +16,17 @@ use crate::protocol::{MqCodec, RemotingCommand};
 
 pub struct ConnectionSender {
     addr: String,
+
+    //cmd发送使用的sender
     tx: mpsc::UnboundedSender<RemotingCommand>,
+
+    //需要接收结果时发送receiver对应的sender使用的sender
+    //这里有些技巧：我需要一个结果，这里不是直接存储一个能接收到结果的receiver
+    //而是临时新创建一个sender_1, receiver_1 对，使用receiver_1进行结果的接收
+    //而远端是怎么知道要把网络结果回传到receiver_1，也就是远端怎么知道要把结果发送到sender_1呢？
+    //解决方式就是把sender_1和其对应的编号通过registrations_tx发送过去
     registrations_tx: mpsc::UnboundedSender<(i32, oneshot::Sender<RemotingCommand>)>,
+
     receiver_shutdown: Option<oneshot::Sender<()>>,
     opaque_id: AtomicI32,
 }
@@ -48,6 +57,8 @@ impl ConnectionSender {
 
     #[tracing::instrument(skip(self, cmd))]
     pub async fn send(&self, cmd: RemotingCommand) -> Result<RemotingCommand, Error> {
+
+        //sender也会被发送，在有返回数据产生时使用sender进行往回发送
         let (sender, receiver) = oneshot::channel();
         let mut cmd = cmd;
         cmd.header.opaque = self.opaque_id.fetch_add(1, Ordering::SeqCst);
@@ -59,9 +70,12 @@ impl ConnectionSender {
             &self.addr
         );
         match (
+            // 将sender进行注册：发送给registrations_tx, 并给一个编号opaque
             self.registrations_tx.send((cmd.header.opaque, sender)),
+            // 将cmd通过tx发送出去
             self.tx.send(cmd),
         ) {
+            // 在registrations_tx发送注册sender成功和tx发送消息成功后，使用sender对应的receiver接收结果，如果有结果的话，返回
             (Ok(_), Ok(_)) => receiver.await.map_err(|_err| Error::Connection(ConnectionError::Disconnected)),
             _ => Err(Error::Connection(ConnectionError::Disconnected)),
         }
@@ -70,6 +84,7 @@ impl ConnectionSender {
     pub async fn send_oneway(&self, cmd: RemotingCommand) -> Result<(), Error> {
         let mut cmd = cmd;
         cmd.header.opaque = self.opaque_id.fetch_add(1, Ordering::SeqCst);
+        //oneway只需要发送cmd就行，不用接收结果
         self.tx.send(cmd)
             .map_err(|_| Error::Connection(ConnectionError::Disconnected))?;
         Ok(())
@@ -116,20 +131,21 @@ impl<S: Stream<Item=Result<RemotingCommand, Error>>> Future for Receiver<S> {
             Poll::Pending => {}
         }
         loop {
-            match self.registrations.as_mut().poll_recv(ctx) {
+            match self.registrations.as_mut().poll_recv(ctx) { //registrations是channel，使用poll_recv
                 Poll::Ready(Some((opaque, resolver))) => {
-
-                    debug!("?????????????????????");
+                    // 接收到sender通过registrations_tx发送过来的"注册"信息
+                    // 将sender_1和唯一标识存起来
                     self.pending_requests.insert(opaque, resolver);
                 }
                 Poll::Ready(None) => return Poll::Ready(Err(())),
-                Poll::Pending => break,
+                Poll::Pending => break, //没有事件则break,不要阻塞
             }
         }
         #[allow(clippy::never_loop)]
         loop {
-            match self.inbound.as_mut().poll_next(ctx) {
+            match self.inbound.as_mut().poll_next(ctx) {//inbound是stream，使用poll_next
                 Poll::Ready(Some(Ok(msg))) => {
+                    // 接收到了stream回传的命令响应
                     debug!(
                         code = msg.code(),
                         opaque = msg.header.opaque,
@@ -140,8 +156,7 @@ impl<S: Stream<Item=Result<RemotingCommand, Error>>> Future for Receiver<S> {
                     );
                     if msg.is_response_type() {
                         if let Some(resolver) = self.pending_requests.remove(&msg.header.opaque) {
-                            //在这里将resp发送出去
-                            debug!("！！！！！！！！！！！！");
+                            //如果确认是需要响应的，在这里将resp发送出去
                             let _ = resolver.send(msg);
                         }
                     } else {
@@ -185,11 +200,19 @@ impl Connection {
             S: Sink<RemotingCommand, Error=Error>,
             S: Send + std::marker::Unpin + 'static,
     {
+        // 将流分为输入和输出流
         let (mut sink, stream) = stream.split();
-        let (tx, mut rx) : (mpsc::UnboundedSender<RemotingCommand>, mpsc::UnboundedReceiver<RemotingCommand>) = mpsc::unbounded_channel();
+
+        // rx的消息会传给tcp的流，tx则是存储起来，在send等调用时用于输入
+        let (tx, mut rx): (mpsc::UnboundedSender<RemotingCommand>, mpsc::UnboundedReceiver<RemotingCommand>) = mpsc::unbounded_channel();
+
+        //registrations_tx会存储起来，用于在send等调用是用于注册
         let (registrations_tx, registrations_rx) = mpsc::unbounded_channel();
+
+        //receiver_shutdown_tx会存储起来，用于sender等主动shutdown
         let (receiver_shutdown_tx, receiver_shutdown_rx) = oneshot::channel();
-        //接收协程，接收stream来的数据
+
+        //接收协程，接收stream来的数据. 在stream有数据时会推动Receiver这个future前进，在配置满足时将数据通过registrations中注册的sender发送出来
         tokio::spawn(Box::pin(Receiver::new(
             addr.clone(),
             stream,
@@ -197,6 +220,7 @@ impl Connection {
             registrations_rx,
             receiver_shutdown_rx,
         )));
+
         // 发送协程，从rx接收发送者信息,将信息流传给tcp的sink
         tokio::spawn(Box::pin(async move {
             while let Some(msg) = rx.recv().await {
@@ -213,6 +237,7 @@ impl Connection {
                 }
             }
         }));
+
         let sender = ConnectionSender::new(addr, tx, registrations_tx, receiver_shutdown_tx);
         Ok(sender)
     }

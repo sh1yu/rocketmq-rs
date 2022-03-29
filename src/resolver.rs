@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::Error;
 
-const DEFAULT_NAMESRV_ADDR: &'static str = "http://jmenv.tbsite.net:8080/rocketmq/nsaddr";
+const DEFAULT_NAMESRV_ADDR: &'static str = "http://127.0.0.1:8080/rocketmq/nsaddr";
 
 /// RocketMQ name server resolver trait
 #[async_trait]

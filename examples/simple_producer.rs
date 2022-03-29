@@ -1,11 +1,14 @@
+use tracing::info;
 use rocketmq::producer::{Producer, ProducerOptions, SendStatus};
 use rocketmq::Message;
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt().init();
+
     let mut options = ProducerOptions::default();
     options.set_name_server(vec!["10.248.129.188:9876".to_string()]);
-    println!("options: {:?}", options);
+    info!("options: {:?}", options);
 
     let producer = Producer::with_options(options).unwrap();
     producer.start();
@@ -20,7 +23,7 @@ async fn main() {
     );
 
     let ret = producer.send(msg).await;
-    println!("res {:?}", ret);
+    info!("res {:?}", ret);
 
     // assert_eq!(ret.status, SendStatus::Ok);
 }

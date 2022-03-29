@@ -8,6 +8,7 @@ use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use parking_lot::Mutex;
 use time::OffsetDateTime;
+use tracing::{error, info};
 
 use crate::client::{Client, ClientOptions, ClientState};
 use crate::error::{ClientError, Error};
@@ -21,6 +22,7 @@ use crate::protocol::{
 use crate::resolver::{HttpResolver, PassthroughResolver, Resolver};
 use crate::route::TopicPublishInfo;
 use selector::QueueSelector;
+use crate::Error::TopicNotExist;
 
 /// Message queue selector
 pub mod selector;
@@ -193,8 +195,7 @@ impl Producer {
     }
 
     pub fn start(&self) {
-        self.client
-            .register_producer(&self.options.group_name(), Arc::clone(&self.inner));
+        self.client.register_producer(&self.options.group_name(), Arc::clone(&self.inner));
         self.client.start();
     }
 
@@ -219,22 +220,13 @@ impl Producer {
         if !namespace.is_empty() {
             msg.topic = format!("{}%{}", namespace, msg.topic);
         }
-        let mq = self
-            .select_message_queue(&msg)
-            .await?
-            .ok_or(Error::EmptyRouteData)?;
-        let addr = self
-            .client
-            .name_server
-            .find_broker_addr_by_name(&mq.broker_name)
-            .ok_or(Error::EmptyRouteData)?;
+        let mq = self.select_message_queue(&msg).await?.ok_or(Error::EmptyRouteData)?;
+        let addr = self.client.name_server.find_broker_addr_by_name(&mq.broker_name).ok_or(Error::EmptyRouteData)?;
         let cmd = self.build_send_request(&mq, &mut msg)?;
         let res = tokio::time::timeout(
             self.options.send_msg_timeout.clone(),
             self.client.invoke(&addr, cmd),
-        )
-        .await
-        .map_err(|e| io::Error::new(io::ErrorKind::TimedOut, e))??;
+        ).await.map_err(|e| io::Error::new(io::ErrorKind::TimedOut, e))??;
         Self::process_send_response(&mq.broker_name, res, &[msg])
     }
 
@@ -250,15 +242,8 @@ impl Producer {
         if !namespace.is_empty() {
             msg.topic = format!("{}%{}", namespace, msg.topic);
         }
-        let mq = self
-            .select_message_queue(&msg)
-            .await?
-            .ok_or(Error::EmptyRouteData)?;
-        let addr = self
-            .client
-            .name_server
-            .find_broker_addr_by_name(&mq.broker_name)
-            .ok_or(Error::EmptyRouteData)?;
+        let mq = self.select_message_queue(&msg).await?.ok_or(Error::EmptyRouteData)?;
+        let addr = self.client.name_server.find_broker_addr_by_name(&mq.broker_name).ok_or(Error::EmptyRouteData)?;
         let cmd = self.build_send_request(&mq, &mut msg)?;
         Ok(self.client.invoke_oneway(&addr, cmd).await?)
     }
@@ -289,8 +274,7 @@ impl Producer {
                 msg.body.clone()
             } else {
                 if msg.body.len() >= self.options.compress_msg_body_over_how_much {
-                    let mut encoder =
-                        ZlibEncoder::new(Vec::new(), Compression::new(self.options.compress_level));
+                    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::new(self.options.compress_level));
                     encoder.write_all(&msg.body)?;
                     let compressed = encoder.finish()?;
                     msg.sys_flag |= compressed_flag;
@@ -308,8 +292,7 @@ impl Producer {
                 topic: mq.topic.clone(),
                 queue_id: mq.queue_id,
                 sys_flag,
-                born_timestamp: (OffsetDateTime::now_utc() - OffsetDateTime::UNIX_EPOCH)
-                    .whole_milliseconds() as i64,
+                born_timestamp: (OffsetDateTime::now_utc() - OffsetDateTime::UNIX_EPOCH).whole_milliseconds() as i64,
                 flag: msg.flag,
                 properties: msg.dump_properties(),
                 reconsume_times: 0,
@@ -326,8 +309,7 @@ impl Producer {
                 topic: mq.topic.clone(),
                 queue_id: mq.queue_id,
                 sys_flag,
-                born_timestamp: (OffsetDateTime::now_utc() - OffsetDateTime::UNIX_EPOCH)
-                    .whole_milliseconds() as i64,
+                born_timestamp: (OffsetDateTime::now_utc() - OffsetDateTime::UNIX_EPOCH).whole_milliseconds() as i64,
                 flag: msg.flag,
                 properties: msg.dump_properties(),
                 reconsume_times: 0,
@@ -356,7 +338,7 @@ impl Producer {
                 return Err(Error::ResponseError {
                     code: cmd.code(),
                     message: cmd.header.remark,
-                })
+                });
             }
         };
         let uniq_msg_id = msgs
@@ -397,29 +379,28 @@ impl Producer {
 
     async fn select_message_queue(&self, msg: &Message) -> Result<Option<MessageQueue>, Error> {
         let topic = msg.topic();
+        //本地缓存获取
         let info = self.inner.lock().publish_info.get(topic).cloned();
         let info = if info.is_some() {
             info
         } else {
-            let (route_data, changed) = self
-                .client
-                .name_server
-                .update_topic_route_info(topic)
-                .await?;
-            self.client.update_publish_info(topic, route_data, changed);
-            self.inner.lock().publish_info.get(topic).cloned()
+            // 本地没获取到，远程NameServer获取
+            let route_info_wrapper = self.client.name_server.update_topic_route_info(topic).await;
+            match route_info_wrapper {
+                Ok((route_data, changed)) => {
+                    self.client.update_publish_info(topic, route_data, changed);
+                    self.inner.lock().publish_info.get(topic).cloned()
+                }
+                Err(TopicNotExist(_)) => None,
+                Err(e) => return Err(e)
+            }
         };
         let info = if info.is_some() {
             info
         } else {
-            let (route_data, changed) = self
-                .client
-                .name_server
-                .update_topic_route_info_with_default(
-                    topic,
-                    &self.options.create_topic_key,
-                    self.options.default_topic_queue_nums,
-                )
+            // 远程NameServer也没获取到，使用默认topic获取
+            let (route_data, changed) = self.client.name_server
+                .update_topic_route_info_with_default(topic, &self.options.create_topic_key, self.options.default_topic_queue_nums)
                 .await?;
             self.client.update_publish_info(topic, route_data, changed);
             self.inner.lock().publish_info.get(topic).cloned()
